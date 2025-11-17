@@ -4,7 +4,6 @@ from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as T
 from PIL import Image
 import os
-import mlflow
 
 class DeepfakeDataset(Dataset):
     def __init__(self, root_dir, transform=None):

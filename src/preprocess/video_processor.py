@@ -6,7 +6,7 @@ import streamlit as st
 from typing import Generator, Tuple, List
 import tempfile
 import os
-from data_handler import get_transforms
+from src.preprocess.data_handler import get_transforms
 import mediapipe as mp
 import logging
 
