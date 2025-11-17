@@ -1,68 +1,112 @@
-import torch
-import torch.nn as nn
-import mlflow
-import mlflow.pytorch
-import timm
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.metrics import confusion_matrix, roc_curve, auc
-import numpy as np
-from data_handler import get_dataloaders
 import logging
 import os
+from types import SimpleNamespace
+
+import matplotlib.pyplot as plt
+import mlflow
+import mlflow.pytorch
+import numpy as np
+import seaborn as sns
+import timm
+import torch
+import torch.nn as nn
+from sklearn.metrics import confusion_matrix, roc_curve, auc
 from tqdm import tqdm
+
+from src.preprocess.data_handler import get_dataloaders
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class DeepfakeXception(nn.Module):
+class CrossAttention(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.query = nn.Linear(dim, dim)
+        self.key = nn.Linear(dim, dim)
+        self.value = nn.Linear(dim, dim)
+        self.scale = dim ** -0.5
+        
+    def forward(self, x):
+        q = self.query(x)
+        k = self.key(x)
+        v = self.value(x)
+        
+        attn = (q @ k.transpose(-2, -1)) * self.scale
+        attn = attn.softmax(dim=-1)
+        
+        out = attn @ v
+        return out
+
+class DeepfakeCrossAttention(nn.Module):
     def __init__(self):
         super().__init__()
-        # Load pretrained Xception using timm
+        # Load pretrained backbone (using EfficientNet-B0 as feature extractor)
         self.backbone = timm.create_model(
-            'xception',
+            'efficientnet_b0',
             pretrained=True,
             num_classes=0,
-            global_pool='avg'
+            global_pool=''
         )
         
-        # Get the number of features
+        # Get feature dimensions
         with torch.no_grad():
-            dummy_input = torch.zeros(1, 3, 299, 299)
+            dummy_input = torch.zeros(1, 3, 224, 224)
             features = self.backbone(dummy_input)
-            in_features = features.shape[1]
+            self.feature_dim = features.shape[1]
+            self.spatial_dim = features.shape[2] * features.shape[3]
         
-        # Create custom classification head
+        # Cross-attention layers
+        self.cross_attention1 = CrossAttention(self.feature_dim)
+        self.cross_attention2 = CrossAttention(self.feature_dim)
+        
+        # Global average pooling
+        self.gap = nn.AdaptiveAvgPool2d(1)
+        
+        # Classification head
         self.classifier = nn.Sequential(
-            nn.BatchNorm1d(in_features),
+            nn.LayerNorm(self.feature_dim),
             nn.Dropout(0.5),
-            nn.Linear(in_features, 1024),
-            nn.ReLU(inplace=True),
-            nn.BatchNorm1d(1024),
-            nn.Dropout(0.5),
-            nn.Linear(1024, 512),
-            nn.ReLU(inplace=True),
-            nn.BatchNorm1d(512),
+            nn.Linear(self.feature_dim, 512),
+            nn.GELU(),
+            nn.LayerNorm(512),
             nn.Dropout(0.3),
-            nn.Linear(512, 1)
+            nn.Linear(512, 256),
+            nn.GELU(),
+            nn.LayerNorm(256),
+            nn.Dropout(0.2),
+            nn.Linear(256, 1)
         )
         
         self._init_weights()
     
     def _init_weights(self):
-        for m in self.classifier.modules():
+        for m in self.modules():
             if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
+                nn.init.trunc_normal_(m.weight, std=0.02)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.BatchNorm1d):
-                nn.init.constant_(m.weight, 1)
+            elif isinstance(m, nn.LayerNorm):
                 nn.init.constant_(m.bias, 0)
+                nn.init.constant_(m.weight, 1.0)
     
     def forward(self, x):
-        features = self.backbone(x)
-        return self.classifier(features)
+        # Extract features
+        features = self.backbone(x)  # B, C, H, W
+        
+        # Reshape for attention
+        B, C, H, W = features.shape
+        features = features.view(B, C, -1).transpose(1, 2)  # B, HW, C
+        
+        # Apply cross-attention
+        attended1 = self.cross_attention1(features)
+        attended2 = self.cross_attention2(attended1)
+        
+        # Global average pooling
+        pooled = attended2.mean(dim=1)  # B, C
+        
+        # Classification
+        return self.classifier(pooled)
 
 class DeepfakeTrainer:
     def __init__(self, model, train_loader, val_loader, test_loader, device):
@@ -73,18 +117,22 @@ class DeepfakeTrainer:
         self.device = device
         self.criterion = nn.BCEWithLogitsLoss()
         
-        # Different learning rates for backbone and classifier
+        # Different learning rates for different components
         backbone_params = []
+        attention_params = []
         classifier_params = []
         
         for name, param in model.named_parameters():
-            if 'classifier' in name:
-                classifier_params.append(param)
-            else:
+            if 'backbone' in name:
                 backbone_params.append(param)
+            elif 'cross_attention' in name:
+                attention_params.append(param)
+            else:
+                classifier_params.append(param)
         
         self.optimizer = torch.optim.AdamW([
             {'params': backbone_params, 'lr': 1e-5},
+            {'params': attention_params, 'lr': 5e-5},
             {'params': classifier_params, 'lr': 1e-4}
         ], weight_decay=0.01)
         
@@ -207,50 +255,58 @@ class DeepfakeTrainer:
         })
         return test_loss, test_acc
 
-def main():
-    # Set random seeds
-    torch.manual_seed(42)
-    np.random.seed(42)
-    
-    # MLflow setup
-    mlflow.set_tracking_uri('file:./mlruns')
-    mlflow.set_experiment('deepfake_xception')
-    
-    # Configuration
-    DATA_DIR = '/kaggle/input/3body-filtered-v2-10k'  # Adjust as needed
-    IMAGE_SIZE = 299  # Xception specific size
-    BATCH_SIZE = 32
-    NUM_EPOCHS = 15 #Change in future for main run
-    DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
-    # Get data
+def _build_config(config: SimpleNamespace | None = None) -> SimpleNamespace:
+    defaults = {
+        'data_dir': 'data/processed',
+        'image_size': 224,
+        'batch_size': 64,
+        'num_epochs': 15,
+        'experiment_name': 'deepfake_cross_attention',
+        'tracking_uri': 'file:./mlruns',
+        'seed': 42,
+    }
+    if config is None:
+        config = SimpleNamespace()
+    for key, value in defaults.items():
+        if not hasattr(config, key) or getattr(config, key) is None:
+            setattr(config, key, value)
+    if not hasattr(config, 'device') or config.device is None:
+        config.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    return config
+
+
+def run_training(config: SimpleNamespace | None = None) -> None:
+    config = _build_config(config)
+
+    torch.manual_seed(config.seed)
+    np.random.seed(config.seed)
+
+    mlflow.set_tracking_uri(config.tracking_uri)
+    mlflow.set_experiment(config.experiment_name)
+
     train_loader, val_loader, test_loader = get_dataloaders(
-        DATA_DIR, IMAGE_SIZE, BATCH_SIZE
+        config.data_dir, config.image_size, config.batch_size
     )
-    
+
     with mlflow.start_run():
-        # Log parameters
         mlflow.log_params({
-            'model_type': 'xception',
-            'image_size': IMAGE_SIZE,
-            'batch_size': BATCH_SIZE,
-            'num_epochs': NUM_EPOCHS,
+            'model_type': 'cross_attention',
+            'image_size': config.image_size,
+            'batch_size': config.batch_size,
+            'num_epochs': config.num_epochs,
             'optimizer': 'AdamW',
             'backbone_lr': 1e-5,
+            'attention_lr': 5e-5,
             'classifier_lr': 1e-4,
-            'weight_decay': 0.01
+            'weight_decay': 0.01,
         })
-        
-        # Create and train model
-        model = DeepfakeXception()
-        trainer = DeepfakeTrainer(model, train_loader, val_loader, test_loader, DEVICE)
-        
-        # Train
-        trainer.train(NUM_EPOCHS)
-        
-        # Test
-        test_loss, test_acc = trainer.test()
-        logger.info(f'Test Loss: {test_loss:.4f}, Test Accuracy: {test_acc:.4f}')
 
-if __name__ == '__main__':
-    main() 
+        model = DeepfakeCrossAttention()
+        trainer = DeepfakeTrainer(
+            model, train_loader, val_loader, test_loader, config.device
+        )
+
+        trainer.train(config.num_epochs)
+
+        test_loss, test_acc = trainer.test()
+        logger.info('Test Loss: %.4f, Test Accuracy: %.4f', test_loss, test_acc)

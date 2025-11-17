@@ -1,60 +1,126 @@
-import torch
-import torch.nn as nn
+import logging
+import math
+import os
+from types import SimpleNamespace
+
+import matplotlib.pyplot as plt
 import mlflow
 import mlflow.pytorch
-import timm
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.metrics import confusion_matrix, roc_curve, auc
 import numpy as np
-from data_handler import get_dataloaders
-import logging
-import os
+import seaborn as sns
+import timm
+import torch
+import torch.nn as nn
+from sklearn.metrics import confusion_matrix, roc_curve, auc
 from tqdm import tqdm
+
+from src.preprocess.data_handler import get_dataloaders
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class DeepfakeSwin(nn.Module):
-    def __init__(self):
+class MultiHeadAttention(nn.Module):
+    def __init__(self, dim, num_heads=8, qkv_bias=False, attn_drop=0., proj_drop=0.):
         super().__init__()
-        # Load pretrained Swin Transformer
+        self.num_heads = num_heads
+        head_dim = dim // num_heads
+        self.scale = head_dim ** -0.5
+
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+
+    def forward(self, x):
+        B, N, C = x.shape
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv.unbind(0)
+
+        attn = (q @ k.transpose(-2, -1)) * self.scale
+        attn = attn.softmax(dim=-1)
+        attn = self.attn_drop(attn)
+
+        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x
+
+class TransformerBlock(nn.Module):
+    def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, drop=0., attn_drop=0.):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(dim)
+        self.attn = MultiHeadAttention(dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop)
+        self.norm2 = nn.LayerNorm(dim)
+        mlp_hidden_dim = int(dim * mlp_ratio)
+        self.mlp = nn.Sequential(
+            nn.Linear(dim, mlp_hidden_dim),
+            nn.GELU(),
+            nn.Dropout(drop),
+            nn.Linear(mlp_hidden_dim, dim),
+            nn.Dropout(drop)
+        )
+
+    def forward(self, x):
+        x = x + self.attn(self.norm1(x))
+        x = x + self.mlp(self.norm2(x))
+        return x
+
+class DeepfakeCNNTransformer(nn.Module):
+    def __init__(self, num_transformer_layers=6):
+        super().__init__()
+        # CNN Backbone (EfficientNet-B0)
         self.backbone = timm.create_model(
-            'swin_base_patch4_window7_224_in22k',
+            'efficientnet_b0',
             pretrained=True,
-            num_classes=0  # Remove classification head
+            num_classes=0,
+            global_pool=''
         )
         
-        # Get feature dimension
+        # Get feature dimensions
         with torch.no_grad():
             dummy_input = torch.zeros(1, 3, 224, 224)
             features = self.backbone(dummy_input)
-            feature_dim = features.shape[1]
+            self.feature_dim = features.shape[1]
+            self.num_patches = features.shape[2] * features.shape[3]
         
-        # Create custom classification head
-        self.classifier = nn.Sequential(
-            nn.LayerNorm(feature_dim),
-            nn.Dropout(p=0.5),
-            nn.Linear(feature_dim, 1024),
-            nn.LayerNorm(1024),
-            nn.GELU(),
-            nn.Dropout(p=0.4),
-            nn.Linear(1024, 512),
+        # Position embedding
+        self.pos_embed = nn.Parameter(torch.zeros(1, self.num_patches, self.feature_dim))
+        
+        # Transformer layers
+        self.transformer_layers = nn.ModuleList([
+            TransformerBlock(
+                dim=self.feature_dim,
+                num_heads=8,
+                mlp_ratio=4,
+                qkv_bias=True,
+                drop=0.1,
+                attn_drop=0.1
+            ) for _ in range(num_transformer_layers)
+        ])
+        
+        # Classification head
+        self.norm = nn.LayerNorm(self.feature_dim)
+        self.head = nn.Sequential(
+            nn.Linear(self.feature_dim, 512),
             nn.LayerNorm(512),
             nn.GELU(),
-            nn.Dropout(p=0.3),
+            nn.Dropout(0.5),
             nn.Linear(512, 256),
             nn.LayerNorm(256),
             nn.GELU(),
-            nn.Dropout(p=0.2),
+            nn.Dropout(0.3),
             nn.Linear(256, 1)
         )
         
         self._init_weights()
     
     def _init_weights(self):
-        for m in self.classifier.modules():
+        # Initialize position embedding
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
+        
+        # Initialize other weights
+        for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.trunc_normal_(m.weight, std=0.02)
                 if m.bias is not None:
@@ -64,8 +130,26 @@ class DeepfakeSwin(nn.Module):
                 nn.init.constant_(m.weight, 1.0)
     
     def forward(self, x):
-        features = self.backbone(x)
-        return self.classifier(features)
+        # Extract CNN features
+        features = self.backbone(x)  # B, C, H, W
+        
+        # Reshape to sequence
+        B, C, H, W = features.shape
+        features = features.permute(0, 2, 3, 1).reshape(B, H*W, C)
+        
+        # Add position embeddings
+        features = features + self.pos_embed
+        
+        # Apply transformer layers
+        for layer in self.transformer_layers:
+            features = layer(features)
+        
+        # Global average pooling
+        features = features.mean(dim=1)
+        
+        # Normalize and classify
+        features = self.norm(features)
+        return self.head(features)
 
 class DeepfakeTrainer:
     def __init__(self, model, train_loader, val_loader, test_loader, device):
@@ -76,19 +160,23 @@ class DeepfakeTrainer:
         self.device = device
         self.criterion = nn.BCEWithLogitsLoss()
         
-        # Different learning rates for backbone and classifier
+        # Different learning rates for different components
         backbone_params = []
-        classifier_params = []
+        transformer_params = []
+        head_params = []
         
         for name, param in model.named_parameters():
-            if 'classifier' in name:
-                classifier_params.append(param)
-            else:
+            if 'backbone' in name:
                 backbone_params.append(param)
+            elif any(x in name for x in ['transformer', 'pos_embed']):
+                transformer_params.append(param)
+            else:
+                head_params.append(param)
         
         self.optimizer = torch.optim.AdamW([
             {'params': backbone_params, 'lr': 1e-5},
-            {'params': classifier_params, 'lr': 1e-4}
+            {'params': transformer_params, 'lr': 5e-5},
+            {'params': head_params, 'lr': 1e-4}
         ], weight_decay=0.01)
         
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -210,50 +298,58 @@ class DeepfakeTrainer:
         })
         return test_loss, test_acc
 
-def main():
-    # Set random seeds
-    torch.manual_seed(42)
-    np.random.seed(42)
-    
-    # MLflow setup
-    mlflow.set_tracking_uri('file:./mlruns')
-    mlflow.set_experiment('deepfake_swin')
-    
-    # Configuration
-    DATA_DIR = '/kaggle/input/3body-filtered-v2-10k'  # Adjust as needed
-    IMAGE_SIZE = 224
-    BATCH_SIZE = 32
-    NUM_EPOCHS = 15 #Change in future for main run
-    DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
-    # Get data
+def _build_config(config: SimpleNamespace | None = None) -> SimpleNamespace:
+    defaults = {
+        'data_dir': 'data/processed',
+        'image_size': 224,
+        'batch_size': 64,
+        'num_epochs': 15,
+        'experiment_name': 'deepfake_cnn_transformer',
+        'tracking_uri': 'file:./mlruns',
+        'seed': 42,
+    }
+    if config is None:
+        config = SimpleNamespace()
+    for key, value in defaults.items():
+        if not hasattr(config, key) or getattr(config, key) is None:
+            setattr(config, key, value)
+    if not hasattr(config, 'device') or config.device is None:
+        config.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    return config
+
+
+def run_training(config: SimpleNamespace | None = None) -> None:
+    config = _build_config(config)
+
+    torch.manual_seed(config.seed)
+    np.random.seed(config.seed)
+
+    mlflow.set_tracking_uri(config.tracking_uri)
+    mlflow.set_experiment(config.experiment_name)
+
     train_loader, val_loader, test_loader = get_dataloaders(
-        DATA_DIR, IMAGE_SIZE, BATCH_SIZE
+        config.data_dir, config.image_size, config.batch_size
     )
-    
+
     with mlflow.start_run():
-        # Log parameters
         mlflow.log_params({
-            'model_type': 'swin_transformer',
-            'image_size': IMAGE_SIZE,
-            'batch_size': BATCH_SIZE,
-            'num_epochs': NUM_EPOCHS,
+            'model_type': 'cnn_transformer',
+            'image_size': config.image_size,
+            'batch_size': config.batch_size,
+            'num_epochs': config.num_epochs,
             'optimizer': 'AdamW',
             'backbone_lr': 1e-5,
-            'classifier_lr': 1e-4,
-            'weight_decay': 0.01
+            'transformer_lr': 5e-5,
+            'head_lr': 1e-4,
+            'weight_decay': 0.01,
         })
-        
-        # Create and train model
-        model = DeepfakeSwin()
-        trainer = DeepfakeTrainer(model, train_loader, val_loader, test_loader, DEVICE)
-        
-        # Train
-        trainer.train(NUM_EPOCHS)
-        
-        # Test
-        test_loss, test_acc = trainer.test()
-        logger.info(f'Test Loss: {test_loss:.4f}, Test Accuracy: {test_acc:.4f}')
 
-if __name__ == '__main__':
-    main()
+        model = DeepfakeCNNTransformer()
+        trainer = DeepfakeTrainer(
+            model, train_loader, val_loader, test_loader, config.device
+        )
+
+        trainer.train(config.num_epochs)
+
+        test_loss, test_acc = trainer.test()
+        logger.info('Test Loss: %.4f, Test Accuracy: %.4f', test_loss, test_acc)
