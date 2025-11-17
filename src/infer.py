@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import argparse
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import torch
 from torch.utils.data import DataLoader
+from PIL import Image
 
 from src.models.cnn_transformer import DeepfakeCNNTransformer
 from src.models.cross_attention import DeepfakeCrossAttention
@@ -114,6 +116,47 @@ def run_inference(settings: SimpleNamespace) -> None:
     print(f'Inference complete | Loss: {avg_loss:.4f} | Accuracy: {accuracy:.4f}')
 
 
+def _find_sample_image(data_dir: str) -> Path | None:
+    base = Path(data_dir)
+    search_dirs = [base]
+    for sub in ('real', 'fake'):
+        search_dirs.append(base / sub)
+    extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff', '.webp')
+    for directory in search_dirs:
+        if not directory.is_dir():
+            continue
+        for ext in extensions:
+            for candidate in sorted(directory.glob(f'*{ext}')):
+                return candidate
+    return None
+
+
+def _simulate_inference_preview(settings: SimpleNamespace) -> None:
+    image_path = _find_sample_image(settings.data_dir)
+    transform = get_transforms(settings.image_size)
+    if image_path is None:
+        print(
+            f'No images found in {settings.data_dir}. Using a random tensor for inference preview.'
+        )
+        sample = torch.randn(1, 3, settings.image_size, settings.image_size)
+    else:
+        with Image.open(image_path).convert('RGB') as image:
+            sample = transform(image).unsqueeze(0)
+
+    device = settings.device
+    sample = sample.to(device)
+    dummy_model = torch.nn.Sequential(
+        torch.nn.Flatten(),
+        torch.nn.Linear(sample.shape[1] * sample.shape[2] * sample.shape[3], 1),
+        torch.nn.Sigmoid(),
+    ).to(device)
+    with torch.no_grad():
+        prediction = dummy_model(sample)
+    print(f'Inference preview device: {device}')
+    print(f'Inference preview input shape: {tuple(sample.shape)}')
+    print(f'Dummy prediction: {prediction.detach().cpu().numpy()}')
+
+
 def main() -> None:
     args = parse_args()
     settings = build_settings(args)
@@ -121,4 +164,8 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-    main()
+    cli_args = parse_args()
+    cli_settings = build_settings(cli_args)
+    print(f'Loaded inference settings: {cli_settings}')
+    _simulate_inference_preview(cli_settings)
+    run_inference(cli_settings)

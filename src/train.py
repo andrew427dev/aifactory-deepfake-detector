@@ -3,8 +3,13 @@ from __future__ import annotations
 
 import argparse
 import os
+from pathlib import Path
 from types import SimpleNamespace
-from typing import Callable, Dict
+from typing import Callable, Dict, List
+
+import torch
+from PIL import Image
+import torchvision.transforms as T
 
 from src.models import (
     cnn_transformer,
@@ -109,13 +114,68 @@ def build_config(args: argparse.Namespace) -> SimpleNamespace:
     )
 
 
-def main() -> None:
-    args = parse_args()
-    config = build_config(args)
+def _find_images(directory: str, limit: int) -> List[Path]:
+    path = Path(directory)
+    if not path.is_dir():
+        return []
+    extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff', '.webp')
+    images: List[Path] = []
+    for ext in extensions:
+        for candidate in sorted(path.glob(f'*{ext}')):
+            images.append(candidate)
+            if len(images) >= limit:
+                return images
+    return images
 
+
+def _simulate_training_preview(config: SimpleNamespace, limit: int = 2) -> None:
+    sample_dir = _resolve_directory('data', 'processed', 'real')
+    transform = T.Compose([
+        T.Resize((config.image_size, config.image_size)),
+        T.ToTensor(),
+    ])
+    image_paths = _find_images(sample_dir, limit)
+    if not image_paths:
+        print(
+            f'No images found in {sample_dir}. Using random tensors to simulate training inputs.'
+        )
+        batch = torch.randn(limit, 3, config.image_size, config.image_size)
+    else:
+        tensors = []
+        for img_path in image_paths:
+            with Image.open(img_path).convert('RGB') as img:
+                tensors.append(transform(img))
+        batch = torch.stack(tensors)
+
+    device = config.device
+    batch = batch.to(device)
+    dummy_model = torch.nn.Sequential(
+        torch.nn.Flatten(),
+        torch.nn.Linear(
+            batch.shape[1] * batch.shape[2] * batch.shape[3],
+            1,
+        ),
+    ).to(device)
+    dummy_output = dummy_model(batch)
+    print(f'Using device: {device}')
+    print(f'Input tensor shape: {tuple(batch.shape)}')
+    print(f'Dummy model forward output: {dummy_output.detach().cpu().numpy()}')
+
+
+def _run_training(config: SimpleNamespace) -> None:
     trainer = MODEL_REGISTRY[config.model]
     trainer(config)
 
 
+def main() -> None:
+    args = parse_args()
+    config = build_config(args)
+    _run_training(config)
+
+
 if __name__ == '__main__':
-    main()
+    cli_args = parse_args()
+    cli_config = build_config(cli_args)
+    print(f'Loaded config: {cli_config}')
+    _simulate_training_preview(cli_config)
+    _run_training(cli_config)
