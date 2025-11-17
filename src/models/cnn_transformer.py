@@ -309,7 +309,11 @@ def run_training(config: SimpleNamespace | None = None) -> None:
     mlflow.set_experiment(config.experiment_name)
 
     train_loader, val_loader, test_loader = get_dataloaders(
-        config.data_dir, config.image_size, config.batch_size
+        config.data_dir,
+        config.image_size,
+        config.batch_size,
+        val_dir=getattr(config, 'val_data_dir', None),
+        test_dir=getattr(config, 'test_data_dir', None),
     )
 
     with mlflow.start_run():

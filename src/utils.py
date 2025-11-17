@@ -9,6 +9,10 @@ from typing import Iterable, List, Sequence, Tuple
 import numpy as np
 import torch
 from tqdm import tqdm
+import yaml
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def set_seed(seed: int | None) -> None:
@@ -61,6 +65,27 @@ def load_model(
     state_dict = torch.load(path, map_location=map_location)
     model.load_state_dict(state_dict)
     return model.to(map_location)
+
+
+def to_absolute_path(path: str | os.PathLike[str] | None) -> str | None:
+    """Resolve ``path`` relative to the project root when not absolute."""
+    if path is None:
+        return None
+    path_str = os.fspath(path)
+    if not path_str:
+        return None
+    if os.path.isabs(path_str):
+        return path_str
+    return os.path.join(str(PROJECT_ROOT), path_str)
+
+
+def load_yaml_config(config_path: str | os.PathLike[str] | None = 'config.yaml') -> dict:
+    """Load and parse a YAML configuration file relative to the repo root."""
+    resolved_path = to_absolute_path(config_path or 'config.yaml')
+    if resolved_path is None:
+        raise ValueError('A configuration path must be provided.')
+    with open(resolved_path, 'r', encoding='utf-8') as config_file:
+        return yaml.safe_load(config_file) or {}
 
 
 def compute_accuracy(predictions: Sequence[float], targets: Sequence[float], threshold: float = 0.5) -> float:
