@@ -1,17 +1,19 @@
-import torch
-import torch.nn as nn
+import logging
+import math
+from types import SimpleNamespace
+
+import matplotlib.pyplot as plt
 import mlflow
 import mlflow.pytorch
-import timm
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.metrics import confusion_matrix, roc_curve, auc
 import numpy as np
-from data_handler import get_dataloaders
-import logging
-import os
-from tqdm import tqdm
-import math
+import seaborn as sns
+import timm
+import torch
+import torch.nn as nn
+from sklearn.metrics import confusion_matrix, roc_curve, auc
+
+from src.preprocess.data_handler import get_dataloaders
+from src.utils import get_device, run_epoch, save_model, set_seed
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -149,13 +151,22 @@ class DeepfakeCNNTransformer(nn.Module):
         return self.head(features)
 
 class DeepfakeTrainer:
-    def __init__(self, model, train_loader, val_loader, test_loader, device):
+    def __init__(
+        self,
+        model,
+        train_loader,
+        val_loader,
+        test_loader,
+        device,
+        checkpoint_path: str | None = None,
+    ):
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.test_loader = test_loader
         self.device = device
         self.criterion = nn.BCEWithLogitsLoss()
+        self.checkpoint_path = checkpoint_path
         
         # Different learning rates for different components
         backbone_params = []
@@ -181,52 +192,23 @@ class DeepfakeTrainer:
         )
     
     def train_epoch(self, epoch):
-        self.model.train()
-        running_loss = 0.0
-        predictions = []
-        targets = []
-        
-        pbar = tqdm(self.train_loader, desc=f'Epoch {epoch}')
-        for inputs, labels in pbar:
-            inputs, labels = inputs.to(self.device), labels.to(self.device)
-            
-            self.optimizer.zero_grad()
-            outputs = self.model(inputs).squeeze()
-            loss = self.criterion(outputs, labels)
-            loss.backward()
-            self.optimizer.step()
-            
-            running_loss += loss.item()
-            predictions.extend(torch.sigmoid(outputs).cpu().detach().numpy())
-            targets.extend(labels.cpu().numpy())
-            
-            pbar.set_postfix({'loss': loss.item()})
-        
-        epoch_loss = running_loss / len(self.train_loader)
-        epoch_acc = ((np.array(predictions) > 0.5) == np.array(targets)).mean()
-        
-        return epoch_loss, epoch_acc, predictions, targets
-    
+        return run_epoch(
+            self.model,
+            self.train_loader,
+            self.criterion,
+            self.device,
+            optimizer=self.optimizer,
+            use_tqdm=True,
+            desc=f'Epoch {epoch}',
+        )
+
     def validate(self, loader):
-        self.model.eval()
-        running_loss = 0.0
-        predictions = []
-        targets = []
-        
-        with torch.no_grad():
-            for inputs, labels in loader:
-                inputs, labels = inputs.to(self.device), labels.to(self.device)
-                outputs = self.model(inputs).squeeze()
-                loss = self.criterion(outputs, labels)
-                
-                running_loss += loss.item()
-                predictions.extend(torch.sigmoid(outputs).cpu().numpy())
-                targets.extend(labels.cpu().numpy())
-        
-        avg_loss = running_loss / len(loader)
-        accuracy = ((np.array(predictions) > 0.5) == np.array(targets)).mean()
-        
-        return avg_loss, accuracy, predictions, targets
+        return run_epoch(
+            self.model,
+            loader,
+            self.criterion,
+            self.device,
+        )
     
     def log_metrics(self, epoch, train_loss, train_acc, val_loss, val_acc):
         mlflow.log_metrics({
@@ -278,6 +260,8 @@ class DeepfakeTrainer:
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 mlflow.pytorch.log_model(self.model, "best_model")
+                if self.checkpoint_path:
+                    save_model(self.model, self.checkpoint_path)
             
             # Learning rate scheduling
             self.scheduler.step(val_loss)
@@ -295,54 +279,67 @@ class DeepfakeTrainer:
         })
         return test_loss, test_acc
 
-def main():
-    # Set random seeds
-    torch.manual_seed(42)
-    np.random.seed(42)
-    
-    # MLflow setup
-    mlflow.set_tracking_uri('file:./mlruns')
-    mlflow.set_experiment('deepfake_cnn_transformer')
-    
-    # Configuration
-    DATA_DIR = '/kaggle/input/3body-filtered-v2-10k'  # Adjust as needed
-    IMAGE_SIZE = 224
-    BATCH_SIZE = 64
-    NUM_EPOCHS = 15 #Change in future for main run
-    DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
-    # Get data
+def _build_config(config: SimpleNamespace | None = None) -> SimpleNamespace:
+    defaults = {
+        'data_dir': 'data/processed',
+        'image_size': 224,
+        'batch_size': 64,
+        'num_epochs': 15,
+        'experiment_name': 'deepfake_cnn_transformer',
+        'tracking_uri': 'file:./mlruns',
+        'seed': 42,
+        'checkpoint_path': 'models/best_cnn_transformer.pt',
+    }
+    if config is None:
+        config = SimpleNamespace()
+    for key, value in defaults.items():
+        if not hasattr(config, key) or getattr(config, key) is None:
+            setattr(config, key, value)
+    if not hasattr(config, 'device') or config.device is None:
+        config.device = get_device()
+    return config
+
+
+def run_training(config: SimpleNamespace | None = None) -> None:
+    config = _build_config(config)
+
+    set_seed(config.seed)
+
+    mlflow.set_tracking_uri(config.tracking_uri)
+    mlflow.set_experiment(config.experiment_name)
+
     train_loader, val_loader, test_loader = get_dataloaders(
-        DATA_DIR, IMAGE_SIZE, BATCH_SIZE
+        config.data_dir,
+        config.image_size,
+        config.batch_size,
+        val_dir=getattr(config, 'val_data_dir', None),
+        test_dir=getattr(config, 'test_data_dir', None),
     )
-    
+
     with mlflow.start_run():
-        # Log parameters
         mlflow.log_params({
             'model_type': 'cnn_transformer',
-            'image_size': IMAGE_SIZE,
-            'batch_size': BATCH_SIZE,
-            'num_epochs': NUM_EPOCHS,
+            'image_size': config.image_size,
+            'batch_size': config.batch_size,
+            'num_epochs': config.num_epochs,
             'optimizer': 'AdamW',
             'backbone_lr': 1e-5,
             'transformer_lr': 5e-5,
             'head_lr': 1e-4,
             'weight_decay': 0.01,
-            'num_transformer_layers': 6,
-            'num_heads': 8,
-            'mlp_ratio': 4
         })
-        
-        # Create and train model
-        model = DeepfakeCNNTransformer()
-        trainer = DeepfakeTrainer(model, train_loader, val_loader, test_loader, DEVICE)
-        
-        # Train
-        trainer.train(NUM_EPOCHS)
-        
-        # Test
-        test_loss, test_acc = trainer.test()
-        logger.info(f'Test Loss: {test_loss:.4f}, Test Accuracy: {test_acc:.4f}')
 
-if __name__ == '__main__':
-    main() 
+        model = DeepfakeCNNTransformer()
+        trainer = DeepfakeTrainer(
+            model,
+            train_loader,
+            val_loader,
+            test_loader,
+            config.device,
+            checkpoint_path=config.checkpoint_path,
+        )
+
+        trainer.train(config.num_epochs)
+
+        test_loss, test_acc = trainer.test()
+        logger.info('Test Loss: %.4f, Test Accuracy: %.4f', test_loss, test_acc)

@@ -1,208 +1,82 @@
-# 🌟Deep Learning Approaches for Deepfake Detection🌟  
+# Deepfake Detector
 
-A powerful and comprehensive **deepfake detection system** implementing multiple deep learning architectures, all packed into a **user-friendly web interface**! 🚀  
+통합 PyTorch 파이프라인으로 여러 모델(Xception, Swin Transformer, EfficientNet, Cross-Attention, CNN-Transformer)을 학습하고 추론하는 딥페이크 탐지 레포지토리입니다. `config.yaml`과 공통 유틸리티를 통해 실험 설정, 데이터 경로, 추론 제출 포맷을 일관되게 관리할 수 있습니다.
 
-🌐 **Live Web Application:** [Deepfake Detection Web App](https://ameencaslam-ddp-v4.streamlit.app/)  
-
----
-
-## 🔍 Project Overview  
-
-This project integrates cutting-edge **deep learning architectures** to detect deepfakes:  
-- 🤖 **Xception**  
-- ⚡ **EfficientNet**  
-- 🌀 **Swin Transformer**  
-- 🔗 **Cross Attention**  
-- 🧠 **CNN-Transformer**  
-
-Each model is **independently trained** but seamlessly combined in the web app for **ensemble predictions**.  
-
----
-
-<div align="center">
-<img src="https://i.postimg.cc/htYKyS4w/Screenshot-2024-12-16-105744.png" alt="Web App Screenshot" width="800">
-<p><i>Example of the interactive web app interface</i></p>
-</div>
-
----
-
-<div align="center">
-<img src="https://i.postimg.cc/65wqn5Tf/Screenshot-2024-12-16-105555.png" alt="Ensemble Prediction UI" width="800">
-<p><i>Results from multiple models displayed together</i></p>
-</div> 
-
----
-
-<div align="center">
-<img src="https://i.postimg.cc/2jn31Bj5/Screenshot-2024-12-16-105636.png" alt="Image Analysis Example" width="800">
-<p><i>Image mode with face detection visualization</i></p>
-</div>  
-
----
-
-<div align="center">
-<img src="https://i.postimg.cc/K8jZDKbB/Screenshot-2024-12-16-110538.png" alt="Video Analysis Example" width="800">
-<p><i>Video mode displaying prediction results</i></p>
-</div>  
-
----
-
-<div align="center">
-<img src="https://i.postimg.cc/1zNsbLfz/Screenshot-2024-12-16-110507.png" alt="Cropped Faces Example" width="800">
-<p><i>Cropped face samples from video</i></p>
-</div>  
-
-
----
-
-## 📜 License  
-
-This project is licensed under the **Apache License 2.0**. You are free to use, modify, and distribute the code, provided that the following conditions are met:  
-
-1. **Attribution**: Proper credit must be given to the original authors, along with a copy of the license.  
-2. **State of Derivative Works**: Any modifications or derivative works must be clearly identified as such.  
-3. **No Liability**: The software is provided "as is," without any warranties or guarantees. The authors are not liable for any damages arising from its use.  
-
-For full terms and conditions, refer to the official [LICENSE.md](LICENSE.md) file.
-
----
-
-## 📊 Dataset  
-
-The project utilizes a balanced dataset of **20,000 face-cropped images**:  
-- 🟢 **10,000 Real Images**  
-- 🔴 **10,000 Fake Images**  
-- 📚 Sourced from **DFDC**, **FF++**, and **CelebDF-v2**  
-
-📥 **Dataset Link:** [3body-filtered-v2-10k](https://www.kaggle.com/datasets/ameencaslam/3body-filtered-v2-10k/settings)  
-
----
-
-## 🛠️ Training the Models  
-
-### 📋 Prerequisites  
-- A **Kaggle account** with GPU access  
-- Add the dataset to your Kaggle account  
-
-### 🔧 Training Steps  
-1. Use the provided `train_*.py` files in Kaggle notebooks  
-2. Each model has a unique training configuration  
-3. General training parameters:  
-   ```python
-   NUM_EPOCHS = 30  # Default
-   BATCH_SIZE = 32  
-   IMAGE_SIZE = 224  # Varies by model
-   ```  
-4. Key configurations:  
-   - Optimizer: **AdamW** with weight decay  
-   - Scheduler: **ReduceLROnPlateau**  
-   - Experiment tracking: **MLflow integration**  
-
-### 🔄 Model Conversion  
-
-Models are converted for **CPU compatibility**:  
-- Use the notebook: [DDP-V4-Converter](https://www.kaggle.com/code/ameencaslam/ddp-v4-converter)  
-- Download pre-converted models: [DDP-V4-Models](https://www.kaggle.com/datasets/ameencaslam/ddp-v4-models)  
-
----
-
-## 🌐 Web Application Setup  
-
-### ⚙️ Environment Setup  
-1. Create a virtual environment:  
-   ```bash
-   python -m venv venv  
-   source venv/bin/activate  # Linux/Mac  
-   venv\Scripts\activate     # Windows  
-   ```  
-2. Install dependencies:  
-   ```bash
-   pip install -r requirements.txt  
-   ```  
-
-### 📂 Application Structure  
+## 프로젝트 구조
 ```
-deepfake-detection-project-v4/  
-├── app.py                   # Main Streamlit app  
-├── video_processor.py       # Video utilities  
-├── feature_visualization.py # Visualize CNN features  
-├── data_handler.py          # Data processing  
-├── train_*.py               # Training scripts  
-└── converted_models/        # Directory for pre-trained models  
-```  
+aifactory-deepfake-detector/
+├── config.yaml                 # 공통 하이퍼파라미터/경로 설정
+├── data/
+│   ├── raw/                    # 원본 데이터 (git 미추적)
+│   └── processed/              # 전처리된 real/fake 폴더
+├── models/                     # 체크포인트 저장 (git 미추적)
+├── src/
+│   ├── models/                 # 각 모델별 학습 루프
+│   ├── preprocess/             # Dataset & DataLoader 유틸
+│   ├── train.py                # 단일 학습 엔트리포인트
+│   └── infer.py                # 추론 및 제출 파일 생성 스크립트
+├── submission/                 # JSON/CSV 제출 결과
+├── tests/                      # pytest 기반 단위 테스트
+└── requirements.txt
+```
 
-### ▶️ Run the Application  
-1. Add converted models to the `converted_models/` folder  
-2. Start the app:  
-   ```bash
-   streamlit run app.py  
-   ```  
+## 환경 설정
+```bash
+python -m venv .venv
+source .venv/bin/activate  # Windows는 .venv\\Scripts\\activate
+pip install -r requirements.txt
+```
 
----
+## 설정 파일 (`config.yaml`)
+```yaml
+model: xception
+input_size: 299
+batch_size: 32
+epochs: 10
+learning_rate: 0.0001
+experiment_name: default_experiment
+tracking_uri: file:./mlruns
+seed: 42
+train_data_dir: data/processed/train
+val_data_dir: data/processed/val
+checkpoint_dir: models/
+```
+필요 시 `experiment_name`, `tracking_uri`, `train/val 데이터 경로`, `checkpoint_dir` 등을 수정하거나 `--config` 플래그로 다른 파일을 지정할 수 있습니다.
 
-## 🖥️ Using the Web Application  
+## 학습 실행 예시
+전처리된 `data/processed/real`, `data/processed/fake` 폴더를 준비한 뒤 다음과 같이 실행합니다.
+```bash
+python -m src.train \
+  --config config.yaml \
+  --model xception \
+  --train-data-dir data/processed/train \
+  --val-data-dir data/processed/val \
+  --checkpoint-dir models
+```
+- MLflow 실험명/트래킹 URI는 `config.yaml` 혹은 `--experiment-name`, `--tracking-uri`로 제어합니다.
+- `src/utils.py`의 `get_device`가 자동으로 MPS(Apple), CUDA, CPU 순으로 디바이스를 선택합니다.
 
-### 🖼️ Image Analysis  
-- Upload an image containing a face  
-- View:  
-  - 📸 **Face detection visualization**  
-  - 📊 **Predictions from each model**  
-  - 🧠 **Feature maps** (CNN models only)  
+## 추론 및 제출 파일 저장
+```bash
+python -m src.infer \
+  --config config.yaml \
+  --model xception \
+  --checkpoint models/best_xception.pt \
+  --test-data-dir data/processed/test \
+  --output submission/predictions.json \
+  --output-format json
+```
+- `--output-format csv`를 지정하면 동일한 결과를 CSV로 저장합니다.
+- 추론 시 `DeepfakeDataset(return_paths=True)`를 사용하여 이미지 경로와 확률을 `{image, probability, label}` 포맷으로 저장하므로 대회 제출 템플릿으로 확장하기 쉽습니다.
 
-### 🎥 Video Analysis  
-- Upload a video file  
-- Choose the number of frames to analyze (10–300)  
-- View:  
-  - 🔍 **Frame-by-frame predictions**  
-  - 😃 **Detected faces**  
-  - 📈 **Confidence scores and stats**  
+## 테스트
+새로운 변경 사항을 적용한 후 다음과 같이 기본 동작을 검증하세요.
+```bash
+pytest
+```
+- `tests/test_model_init.py`: Xception/Swin 모델이 사전학습 가중치 없이 초기화 및 forward pass가 가능한지 확인
+- `tests/test_dataloader.py`: `get_dataloaders`가 PyTorch `DataLoader`를 정상 반환하는지 확인
 
----
-
-## 💡 Features  
-
-- 🔗 **Multi-model ensemble predictions**  
-- 🕵️‍♂️ **Real-time face detection**  
-- 🖼️ **Feature map visualization**  
-- 📊 **Confidence tracking**  
-- 🌑 **Dark theme UI**  
-
----
-
-## 🏗️ Model Architecture Details  
-
-### Xception 🤖  
-- Specialized in **texture analysis**  
-- **Input size:** 299x299  
-
-### EfficientNet ⚡  
-- **B3 variant**: Efficiency-accuracy balance  
-- **Input size:** 300x300  
-
-### Swin Transformer 🌀  
-- **Hierarchical feature learning**  
-- **Input size:** 224x224  
-
-### Cross Attention 🔗  
-- Focuses on **enhanced feature interaction**  
-- **Input size:** 224x224  
-
-### CNN-Transformer 🧠  
-- **Hybrid model**: Combines local & global feature learning  
-- **Input size:** 224x224  
-
----
-
-## 📋 Requirements  
-
-- Python 3.8+  
-- CUDA-compatible GPU (for training)  
-- CPU with **8GB+ RAM** (for inference)  
-
----
-
-## 📝 Notes  
-
-- ⚠️ Models must be **converted** before use in the web app  
-- 🖼️ Feature visualization is limited to **CNN-based models**  
-- ⏳ Video processing speed depends on frame count  
+## 팁
+- `models/`와 `submission/`은 `.gitignore`에 포함되어 있어 로컬 아티팩트만 저장합니다.
+- `src/infer.py`는 추론 결과를 JSON/CSV로 자동 직렬화하고 경로를 출력하므로 대회 제출 파일을 빠르게 생성할 수 있습니다.

@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+mlruns/
+.DS_Store
+.env
+.env.*
+*.log
+*.pth
+/models/
+/data/raw/
+/data/processed/
+submission/*.csv
+submission/*.json
