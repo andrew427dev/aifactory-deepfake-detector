@@ -1,4 +1,3 @@
-# data_handler.py
 import os
 
 import torch
@@ -17,7 +16,7 @@ class DeepfakeDataset(Dataset):
         self.real_dir = os.path.join(root_dir, "real")
         self.fake_dir = os.path.join(root_dir, "fake")
 
-        # 여기에 최종 이미지 경로(상대경로)와 라벨(0=real, 1=fake)을 모은다
+        # 최종 이미지 경로(상대경로)와 라벨(0=real, 1=fake)
         self.image_paths: list[str] = []
         self.labels: list[int] = []
 
@@ -68,25 +67,49 @@ class DeepfakeDataset(Dataset):
         return sample
 
 
-
 def get_transforms(image_size):
     transform = T.Compose([
         T.Resize((image_size, image_size)),
         T.ToTensor(),
-        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
     return transform
 
 
-def _build_loader(directory, transform, batch_size, shuffle=False):
+def _build_loader(
+    directory,
+    transform,
+    batch_size,
+    shuffle=False,
+    num_workers: int = 4,
+):
     dataset = DeepfakeDataset(directory, transform=transform)
-    return DataLoader(dataset, batch_size=batch_size, num_workers=4, shuffle=shuffle)
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        pin_memory=True,
+        persistent_workers=num_workers > 0,
+    )
 
 
-def get_dataloaders(train_dir, image_size, batch_size=32, val_dir=None, test_dir=None):
+def get_dataloaders(
+    train_dir,
+    image_size,
+    batch_size: int = 32,
+    val_dir: str | None = None,
+    test_dir: str | None = None,
+    num_workers: int = 4,
+):
+    """
+    train_dir / val_dir / test_dir 구조를 기반으로 DataLoader 3개를 반환한다.
+    num_workers, pin_memory, persistent_workers 등을 한 곳에서 관리한다.
+    """
     transform = get_transforms(image_size)
 
     if val_dir is None:
+        # 단일 디렉토리에서 train/val/test split
         train_ratio = 0.7
         val_ratio = 0.15
         dataset = DeepfakeDataset(train_dir, transform=transform)
@@ -100,14 +123,40 @@ def get_dataloaders(train_dir, image_size, batch_size=32, val_dir=None, test_dir
         )
 
         train_loader = DataLoader(
-            train_dataset, batch_size=batch_size, num_workers=4, shuffle=True
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=num_workers,
+            pin_memory=True,
+            persistent_workers=num_workers > 0,
         )
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=4)
-        test_loader = DataLoader(test_dataset, batch_size=batch_size, num_workers=4)
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=True,
+            persistent_workers=num_workers > 0,
+        )
+        test_loader = DataLoader(
+            test_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=True,
+            persistent_workers=num_workers > 0,
+        )
         return train_loader, val_loader, test_loader
 
-    train_loader = _build_loader(train_dir, transform, batch_size, shuffle=True)
-    val_loader = _build_loader(val_dir, transform, batch_size)
+    # train / val / test 디렉토리가 따로 있는 경우
+    train_loader = _build_loader(
+        train_dir, transform, batch_size, shuffle=True, num_workers=num_workers
+    )
+    val_loader = _build_loader(
+        val_dir, transform, batch_size, shuffle=False, num_workers=num_workers
+    )
     test_directory = test_dir or val_dir
-    test_loader = _build_loader(test_directory, transform, batch_size)
+    test_loader = _build_loader(
+        test_directory, transform, batch_size, shuffle=False, num_workers=num_workers
+    )
     return train_loader, val_loader, test_loader

@@ -103,6 +103,7 @@ def build_config(args: argparse.Namespace) -> SimpleNamespace:
     image_size = args.image_size or config_data.get("input_size") or 224
     batch_size = args.batch_size or config_data.get("batch_size") or 32
     num_epochs = args.epochs or config_data.get("epochs") or 1
+    num_workers = config_data.get("num_workers", 4)
 
     # 🔹 MLflow-related 설정 (기본값: 로컬 ./mlruns)
     tracking_uri = (
@@ -121,6 +122,7 @@ def build_config(args: argparse.Namespace) -> SimpleNamespace:
         val_data_dir=val_dir,
         image_size=image_size,
         batch_size=batch_size,
+        num_workers=num_workers,
         num_epochs=num_epochs,
         experiment_name=experiment_name,
         tracking_uri=tracking_uri,

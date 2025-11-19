@@ -1,22 +1,20 @@
 model: xception
 input_size: 299
-batch_size: 32
-epochs: 1
+
+batch_size: 64
+epochs: 6
 learning_rate: 0.0001
 
-num_workers: 16
+num_workers: 12
 class_weighted_loss: true
 
-experiment_name: hufs_cluster_experiment
+experiment_name: hufs_cluster_xception_bs64_e6
 tracking_uri: file:./mlruns
 
 seed: 42
 
-# 🚨 데이터 경로 (프레임 뽑은 후 이 구조로 생성됨)
 train_data_dir: /mnt/ssd/deeperforensics/frames/train
 val_data_dir: /mnt/ssd/deeperforensics/frames/val
 test_data_dir: /mnt/ssd/deeperforensics/frames/test
 
-# 🚨 체크포인트/모델 저장 경로
 checkpoint_dir: /mnt/ssd/project/outputs/checkpoints
-
