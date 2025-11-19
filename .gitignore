@@ -1,0 +1,24 @@
+# 데이터 / 프레임 (용량 큼)
+data/
+raw/
+frames/
+*/raw/
+*/frames/
+
+# 체크포인트 / 출력
+models/
+outputs/
+checkpoints/
+*/outputs/
+*/checkpoints/
+
+# MLflow 로그
+mlruns/
+
+# Python 캐시 / 기타
+__pycache__/
+*.pyc
+*.pyo
+*.pkl
+*.log
+.DS_Store
